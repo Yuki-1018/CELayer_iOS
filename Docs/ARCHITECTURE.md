@@ -9,7 +9,8 @@ supplied by the user under their applicable licences.
 1. `CEPELoader` validates an ARM/Thumb PE32 image, maps sections, applies `HIGHLOW` relocations,
    walks imports, and writes API trap addresses into the IAT.
 2. `CECPU` executes guest ARMv4T/Thumb instructions from `CEVirtualMemory`. Calls into the reserved
-   `0xF...` range transfer to `CEKernel` and return through the emulated link register.
+   `0xF...` range transfer to `CEKernel` and return through the emulated link register. Trap IDs are
+   word-aligned so ARM/Thumb interworking cannot discard function-number bits.
 3. `CEKernel` translates supported calls into sandboxed host operations. Handles never expose host
    pointers to guest code.
 4. `CEWindowServer` owns window objects, input state, a message FIFO, and a BGRA framebuffer. Swift

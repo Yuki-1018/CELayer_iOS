@@ -112,6 +112,16 @@ CEStatus CEVirtualMemoryFree(CEVirtualMemory *vm, CEAddress address) {
     return CE_ERROR_NOT_FOUND;
 }
 
+CEStatus CEVirtualMemoryQuery(const CEVirtualMemory *vm, CEAddress address,
+                              CEProtection *protection, uint32_t *remaining_size) {
+    if (!vm) return CE_ERROR_INVALID_ARGUMENT;
+    const CEMemoryRegion *r = find_region_const(vm, address, 1);
+    if (!r) return CE_ERROR_NOT_FOUND;
+    if (protection) *protection = r->protection;
+    if (remaining_size) *remaining_size = r->size - (address - r->base);
+    return CE_OK;
+}
+
 CEStatus CEVirtualMemoryRead(const CEVirtualMemory *vm, CEAddress address,
                              void *destination, size_t length) {
     if (!vm || (!destination && length)) return CE_ERROR_INVALID_ARGUMENT;

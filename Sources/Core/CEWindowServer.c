@@ -36,6 +36,33 @@ CEStatus CEWindowDestroy(CEWindowServer *server, CEHandle handle) {
     }
     return CE_ERROR_NOT_FOUND;
 }
+static bool wide_equal(const uint16_t *a, const uint16_t *b) {
+    while (*a && *a == *b) { ++a; ++b; }
+    return *a == *b;
+}
+CEStatus CEWindowRegisterClass(CEWindowServer *server, const uint16_t *name,
+                               CEAddress wndproc, uint32_t style, CEHandle background) {
+    if (!server || !name || !*name || !wndproc) return CE_ERROR_INVALID_ARGUMENT;
+    for (size_t i = 0; i < server->class_count; ++i)
+        if (wide_equal(server->classes[i].name, name)) return CE_ERROR_ADDRESS_CONFLICT;
+    if (server->class_count >= CE_MAX_WINDOW_CLASSES) return CE_ERROR_LIMIT;
+    CEWindowClass *c = &server->classes[server->class_count++];
+    memset(c, 0, sizeof(*c)); c->wndproc = wndproc; c->style = style; c->background = background;
+    size_t i = 0; for (; i + 1 < CE_ARRAY_COUNT(c->name) && name[i]; ++i) c->name[i] = name[i];
+    return CE_OK;
+}
+CEAddress CEWindowClassProc(const CEWindowServer *server, const uint16_t *name) {
+    if (!server || !name) return 0;
+    for (size_t i = 0; i < server->class_count; ++i)
+        if (wide_equal(server->classes[i].name, name)) return server->classes[i].wndproc;
+    return 0;
+}
+CEWindow *CEWindowFind(CEWindowServer *server, CEHandle handle) {
+    if (!server) return NULL;
+    for (size_t i = 0; i < server->window_count; ++i)
+        if (server->windows[i].handle == handle) return &server->windows[i];
+    return NULL;
+}
 CEStatus CEPostMessage(CEWindowServer *server, CEMessage message) {
     if (!server) return CE_ERROR_INVALID_ARGUMENT;
     if (server->queue_count == CE_MESSAGE_QUEUE_SIZE) return CE_ERROR_LIMIT;
@@ -66,6 +93,44 @@ CEStatus CEGDIBitBlt(CEWindowServer *server, int32_t dx, int32_t dy, uint32_t wi
         int64_t tx = (int64_t)dx + x, ty = (int64_t)dy + y;
         if (tx >= 0 && ty >= 0 && tx < server->width && ty < server->height)
             server->framebuffer[(size_t)ty * server->width + (size_t)tx] = source[(size_t)y * source_stride + x];
+    }
+    server->generation++; return CE_OK;
+}
+
+static const uint8_t glyphs[36][7] = {
+    {14,17,19,21,25,17,14},{4,12,4,4,4,4,14},{14,17,1,2,4,8,31},{30,1,1,14,1,1,30},
+    {2,6,10,18,31,2,2},{31,16,16,30,1,1,30},{14,16,16,30,17,17,14},{31,1,2,4,8,8,8},
+    {14,17,17,14,17,17,14},{14,17,17,15,1,1,14},
+    {14,17,17,31,17,17,17},{30,17,17,30,17,17,30},{15,16,16,16,16,16,15},
+    {30,17,17,17,17,17,30},{31,16,16,30,16,16,31},{31,16,16,30,16,16,16},
+    {15,16,16,19,17,17,15},{17,17,17,31,17,17,17},{14,4,4,4,4,4,14},
+    {7,2,2,2,18,18,12},{17,18,20,24,20,18,17},{16,16,16,16,16,16,31},
+    {17,27,21,21,17,17,17},{17,25,21,19,17,17,17},{14,17,17,17,17,17,14},
+    {30,17,17,30,16,16,16},{14,17,17,17,21,18,13},{30,17,17,30,20,18,17},
+    {15,16,16,14,1,1,30},{31,4,4,4,4,4,4},{17,17,17,17,17,17,14},
+    {17,17,17,17,17,10,4},{17,17,17,21,21,21,10},{17,17,10,4,10,17,17},
+    {17,17,10,4,4,4,4},{31,1,2,4,8,16,31}
+};
+static const uint8_t *glyph_for(uint16_t character) {
+    if (character >= '0' && character <= '9') return glyphs[character - '0'];
+    if (character >= 'a' && character <= 'z') character = (uint16_t)(character - 'a' + 'A');
+    if (character >= 'A' && character <= 'Z') return glyphs[10 + character - 'A'];
+    return NULL;
+}
+CEStatus CEGDIDrawTextUTF16(CEWindowServer *server, int32_t x, int32_t y,
+                            const uint16_t *text, size_t length,
+                            uint32_t foreground, uint32_t background, bool opaque) {
+    if (!server || !text) return CE_ERROR_INVALID_ARGUMENT;
+    int32_t cursor = x;
+    for (size_t i = 0; i < length; ++i, cursor += 6) {
+        if (text[i] == '\n') { y += 8; cursor = x - 6; continue; }
+        const uint8_t *glyph = glyph_for(text[i]);
+        for (int row = 0; row < 8; ++row) for (int column = 0; column < 6; ++column) {
+            int32_t px = cursor + column, py = y + row;
+            if (px < 0 || py < 0 || px >= (int32_t)server->width || py >= (int32_t)server->height) continue;
+            bool set = glyph && row < 7 && column < 5 && (glyph[row] & (1u << (4 - column)));
+            if (set || opaque) server->framebuffer[(size_t)py * server->width + (size_t)px] = set ? foreground : background;
+        }
     }
     server->generation++; return CE_OK;
 }

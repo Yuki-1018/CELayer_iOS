@@ -78,7 +78,10 @@ private struct DeviceView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 28).fill(.black).shadow(radius: 8)
                 if runtime.runtime != nil {
-                    CEMetalDisplay(runtime: runtime).aspectRatio(240.0 / 320.0).padding(14).clipShape(RoundedRectangle(cornerRadius: 15))
+                    CEMetalDisplay(runtime: runtime)
+                        .aspectRatio(240.0 / 320.0, contentMode: .fit)
+                        .padding(14)
+                        .clipShape(RoundedRectangle(cornerRadius: 15))
                 } else {
                     VStack(spacing: 10) { Image(systemName: "power").font(.largeTitle); Text("ライブラリからアプリを起動") }.foregroundStyle(.gray)
                 }

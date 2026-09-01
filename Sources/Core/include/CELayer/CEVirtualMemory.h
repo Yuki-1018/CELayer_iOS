@@ -34,6 +34,8 @@ CEStatus CEVirtualMemoryAllocate(CEVirtualMemory *vm, uint32_t size,
 CEStatus CEVirtualMemoryProtect(CEVirtualMemory *vm, CEAddress address,
                                 uint32_t size, CEProtection protection);
 CEStatus CEVirtualMemoryFree(CEVirtualMemory *vm, CEAddress address);
+CEStatus CEVirtualMemoryQuery(const CEVirtualMemory *vm, CEAddress address,
+                              CEProtection *protection, uint32_t *remaining_size);
 CEStatus CEVirtualMemoryRead(const CEVirtualMemory *vm, CEAddress address,
                              void *destination, size_t length);
 CEStatus CEVirtualMemoryWrite(CEVirtualMemory *vm, CEAddress address,

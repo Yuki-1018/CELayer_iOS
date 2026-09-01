@@ -1,5 +1,8 @@
-name: Build and test
-on: [push, pull_request, workflow_dispatch]
+name: Build unsigned IPA
+
+'on':
+  workflow_dispatch:
+
 permissions:
   contents: read
 jobs:
@@ -12,7 +15,8 @@ jobs:
       - run: cmake --build build --parallel 2
       - run: ctest --test-dir build --output-on-failure
   ios:
-    name: iOS Simulator
+    name: Unsigned iOS IPA
+    needs: core
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -20,9 +24,23 @@ jobs:
         run: brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate
-      - name: Build
-        run: >-
-          xcodebuild -project CELayer.xcodeproj -scheme CELayer
-          -configuration Debug -sdk iphonesimulator
-          -destination 'generic/platform=iOS Simulator'
-          CODE_SIGNING_ALLOWED=NO build
+      - name: Build unsigned device app
+        run: |
+          xcodebuild -project CELayer.xcodeproj -scheme CELayer \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/CELayer.app" "$RUNNER_TEMP/ipa/Payload/"
+          cd "$RUNNER_TEMP/ipa"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/CELayer-unsigned.ipa" Payload
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: CELayer-unsigned-ipa
+          path: CELayer-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
