@@ -169,3 +169,88 @@ CEStatus CEPEMap(const uint8_t *data, size_t size, CEPEImage *image,
     status = apply_relocations(image, memory); if (status != CE_OK) return status;
     return resolve_imports(image, memory, resolver, context);
 }
+
+CEStatus CEPELookupExport(const CEPEImage *image, const CEVirtualMemory *memory,
+                          const char *symbol, uint16_t ordinal, CEAddress *address) {
+    if (!image || !memory || !address) return CE_ERROR_INVALID_ARGUMENT;
+    CEPEDataDirectory d = image->directories[0];
+    if (!d.rva || d.size < 40) return CE_ERROR_NOT_FOUND;
+    CEAddress table = image->mapped_base + d.rva;
+    uint32_t ordinal_base, function_count, name_count, functions, names, ordinals;
+    CEStatus s = CEVirtualMemoryReadU32(memory, table + 16, &ordinal_base); if (s != CE_OK) return s;
+    s = CEVirtualMemoryReadU32(memory, table + 20, &function_count); if (s != CE_OK) return s;
+    s = CEVirtualMemoryReadU32(memory, table + 24, &name_count); if (s != CE_OK) return s;
+    s = CEVirtualMemoryReadU32(memory, table + 28, &functions); if (s != CE_OK) return s;
+    s = CEVirtualMemoryReadU32(memory, table + 32, &names); if (s != CE_OK) return s;
+    s = CEVirtualMemoryReadU32(memory, table + 36, &ordinals); if (s != CE_OK) return s;
+    uint32_t index = UINT32_MAX;
+    if (!symbol) {
+        if (ordinal < ordinal_base || (uint32_t)ordinal - ordinal_base >= function_count) return CE_ERROR_NOT_FOUND;
+        index = (uint32_t)ordinal - ordinal_base;
+    } else {
+        char candidate[192];
+        for (uint32_t i = 0; i < name_count; ++i) {
+            uint32_t name_rva; uint16_t name_ordinal;
+            s = CEVirtualMemoryReadU32(memory, image->mapped_base + names + i * 4, &name_rva); if (s != CE_OK) return s;
+            s = read_ascii(memory, image->mapped_base + name_rva, candidate, sizeof(candidate));
+            if (s != CE_OK && s != CE_ERROR_LIMIT) return s;
+            if (!strcmp(candidate, symbol)) {
+                s = CEVirtualMemoryReadU16(memory, image->mapped_base + ordinals + i * 2, &name_ordinal);
+                if (s != CE_OK) return s;
+                index = name_ordinal; break;
+            }
+        }
+        if (index == UINT32_MAX || index >= function_count) return CE_ERROR_NOT_FOUND;
+    }
+    uint32_t function_rva;
+    s = CEVirtualMemoryReadU32(memory, image->mapped_base + functions + index * 4, &function_rva);
+    if (s != CE_OK || !function_rva) return CE_ERROR_NOT_FOUND;
+    if (function_rva >= d.rva && function_rva < d.rva + d.size) return CE_ERROR_UNSUPPORTED;
+    *address = image->mapped_base + function_rva; return CE_OK;
+}
+
+static CEStatus resource_entry(const CEPEImage *image, const CEVirtualMemory *memory,
+                               uint32_t directory_offset, uint16_t identifier,
+                               uint32_t *target) {
+    CEAddress directory = image->mapped_base + image->directories[2].rva + directory_offset;
+    uint16_t named, ids; CEStatus s = CEVirtualMemoryReadU16(memory, directory + 12, &named);
+    if (s != CE_OK) return s;
+    s = CEVirtualMemoryReadU16(memory, directory + 14, &ids);
+    if (s != CE_OK || (uint32_t)named + ids > 4096) return CE_ERROR_BAD_FORMAT;
+    for (uint32_t i = 0; i < (uint32_t)named + ids; ++i) {
+        uint32_t name, value; s = CEVirtualMemoryReadU32(memory, directory + 16 + i * 8, &name);
+        if (s != CE_OK) return s;
+        s = CEVirtualMemoryReadU32(memory, directory + 20 + i * 8, &value);
+        if (s != CE_OK) return s;
+        if (!(name & 0x80000000u) && (uint16_t)name == identifier) { *target = value; return CE_OK; }
+    }
+    return CE_ERROR_NOT_FOUND;
+}
+CEStatus CEPELookupStringResource(const CEPEImage *image, const CEVirtualMemory *memory,
+                                  uint32_t identifier, uint16_t *text, size_t capacity,
+                                  size_t *length) {
+    if (!image || !memory || !text || !capacity) return CE_ERROR_INVALID_ARGUMENT;
+    CEPEDataDirectory resources = image->directories[2]; if (!resources.rva || resources.size < 16) return CE_ERROR_NOT_FOUND;
+    uint32_t type, block, language;
+    CEStatus s = resource_entry(image, memory, 0, 6, &type);
+    if (s != CE_OK || !(type & 0x80000000u)) return CE_ERROR_NOT_FOUND;
+    s = resource_entry(image, memory, type & 0x7fffffffu, (uint16_t)(identifier / 16u + 1u), &block);
+    if (s != CE_OK || !(block & 0x80000000u)) return CE_ERROR_NOT_FOUND;
+    CEAddress language_dir = image->mapped_base + resources.rva + (block & 0x7fffffffu);
+    uint16_t named, ids; s = CEVirtualMemoryReadU16(memory, language_dir + 12, &named); if (s != CE_OK) return s;
+    s = CEVirtualMemoryReadU16(memory, language_dir + 14, &ids); if (s != CE_OK || !((uint32_t)named + ids)) return CE_ERROR_NOT_FOUND;
+    s = CEVirtualMemoryReadU32(memory, language_dir + 20, &language); if (s != CE_OK || (language & 0x80000000u)) return CE_ERROR_BAD_FORMAT;
+    CEAddress data_entry = image->mapped_base + resources.rva + language; uint32_t data_rva, data_size;
+    s = CEVirtualMemoryReadU32(memory, data_entry, &data_rva); if (s != CE_OK) return s;
+    s = CEVirtualMemoryReadU32(memory, data_entry + 4, &data_size); if (s != CE_OK) return s;
+    CEAddress cursor = image->mapped_base + data_rva; uint32_t selected = identifier & 15u;
+    for (uint32_t i = 0; i <= selected; ++i) {
+        uint16_t count; s = CEVirtualMemoryReadU16(memory, cursor, &count); if (s != CE_OK) return s;
+        cursor += 2; if ((uint64_t)(cursor - (image->mapped_base + data_rva)) + (uint64_t)count * 2 > data_size) return CE_ERROR_BAD_FORMAT;
+        if (i == selected) { size_t copy = count < capacity - 1 ? count : capacity - 1;
+            s = CEVirtualMemoryRead(memory, cursor, text, copy * 2); if (s != CE_OK) return s;
+            text[copy] = 0; if (length) *length = copy; return count ? CE_OK : CE_ERROR_NOT_FOUND; }
+        cursor += (uint32_t)count * 2;
+    }
+    return CE_ERROR_NOT_FOUND;
+}

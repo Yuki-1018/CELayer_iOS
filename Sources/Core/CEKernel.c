@@ -27,7 +27,16 @@ void CEKernelInit(CEKernel *kernel, CEVirtualMemory *memory, CEWindowServer *win
     kernel->boot_millis = CEClockMilliseconds();
     kernel->text_color = 0xff000000u; kernel->background_color = 0xffffffffu;
     kernel->background_opaque = true;
+    kernel->selected_color = 0xff000000u;
     if (root) { strncpy(kernel->root_path, root, sizeof(kernel->root_path) - 1); }
+    if (CEVirtualMemoryAllocate(memory, 4096, CE_PROT_READ | CE_PROT_WRITE, "thread TLS",
+                                &kernel->tls_address) == CE_OK &&
+        CEVirtualMemoryMap(memory, 0xffffc000u, 4096, CE_PROT_READ | CE_PROT_WRITE,
+                           "ARM UserKData") == CE_OK) {
+        (void)CEVirtualMemoryWriteU32(memory, 0xffffc800u, kernel->tls_address);
+        (void)CEVirtualMemoryWriteU32(memory, 0xffffc808u, 65u);
+        (void)CEVirtualMemoryWriteU32(memory, 0xffffc80cu, 66u);
+    }
     if (kernel->root_path[0]) {
         char path[1200]; snprintf(path, sizeof(path), "%s/.celayer-registry.bin", kernel->root_path);
         FILE *file = fopen(path, "rb");
@@ -282,11 +291,11 @@ CEStatus CEKernelDispatch(CEKernel *k, CECPU *cpu, uint16_t module, uint16_t fn)
     case CE_API_GET_DC: cpu->r[0] = 1; return CE_OK;
     case CE_API_RELEASE_DC: cpu->r[0] = 1; return CE_OK;
     case CE_API_CREATE_SOLID_BRUSH: { CEKernelObject o = {.type = CE_OBJECT_BRUSH}; o.value.color = colorref_to_bgra(cpu->r[0]); cpu->r[0] = CEKernelAddHandle(k, o); return CE_OK; }
-    case CE_API_DELETE_OBJECT: { CEHandle h = cpu->r[0]; bool valid = h && h < CE_MAX_KERNEL_HANDLES && k->handles[h].type == CE_OBJECT_BRUSH; cpu->r[0] = valid && CEKernelCloseHandle(k, h) == CE_OK; return CE_OK; }
+    case CE_API_DELETE_OBJECT: { CEHandle h = cpu->r[0]; bool valid = h && h < CE_MAX_KERNEL_HANDLES && (k->handles[h].type == CE_OBJECT_BRUSH || k->handles[h].type == CE_OBJECT_PEN); cpu->r[0] = valid && CEKernelCloseHandle(k, h) == CE_OK; return CE_OK; }
     case CE_API_FILL_RECT: { int32_t rect[4]; CEHandle brush = cpu->r[2]; bool ok = brush < CE_MAX_KERNEL_HANDLES && k->handles[brush].type == CE_OBJECT_BRUSH && CEVirtualMemoryRead(k->memory, cpu->r[1], rect, sizeof(rect)) == CE_OK; if (ok) ok = CEGDIFillRect(k->windows, rect[0], rect[1], rect[2], rect[3], k->handles[brush].value.color) == CE_OK; cpu->r[0] = ok; return CE_OK; }
     case CE_API_SET_PIXEL: { uint32_t color = colorref_to_bgra(cpu->r[3]); cpu->r[0] = CEGDIFillRect(k->windows, (int32_t)cpu->r[1], (int32_t)cpu->r[2], (int32_t)cpu->r[1] + 1, (int32_t)cpu->r[2] + 1, color) == CE_OK ? cpu->r[3] : UINT32_MAX; return CE_OK; }
     case CE_API_DEF_WINDOW_PROC_W: cpu->r[0] = 0; return CE_OK;
-    case CE_API_TRANSLATE_MESSAGE: cpu->r[0] = 1; return CE_OK;
+    case CE_API_TRANSLATE_MESSAGE: { CEMessage m; if (CEVirtualMemoryRead(k->memory, cpu->r[0], &m, sizeof(m)) != CE_OK) { cpu->r[0] = 0; return CE_OK; } if (m.message == 0x0100u && ((m.wparam >= 0x20u && m.wparam <= 0x7eu) || m.wparam == 0x0du || m.wparam == 0x08u || m.wparam == 0x09u)) { CEMessage character = {m.hwnd, 0x0102u, m.wparam, m.lparam, m.time}; (void)CEPostMessage(k->windows, character); } cpu->r[0] = 1; return CE_OK; }
     case CE_API_DISPATCH_MESSAGE_W: { CEMessage m; if (CEVirtualMemoryRead(k->memory, cpu->r[0], &m, sizeof(m)) != CE_OK) return CE_ERROR_ACCESS_VIOLATION; CEWindow *w = CEWindowFind(k->windows, m.hwnd); if (!w || !w->wndproc) { cpu->r[0] = 0; return CE_OK; }
         uint32_t resume = cpu->r[CE_REG_PC] | ((cpu->cpsr & CE_CPSR_T) ? 1u : 0u); cpu->r[CE_REG_SP] -= 4; CEStatus s = CEVirtualMemoryWriteU32(k->memory, cpu->r[CE_REG_SP], resume); if (s != CE_OK) return s;
         cpu->r[0] = m.hwnd; cpu->r[1] = m.message; cpu->r[2] = m.wparam; cpu->r[3] = m.lparam; cpu->r[CE_REG_PC] = w->wndproc & ~1u; cpu->r[CE_REG_LR] = CE_API_TRAP_ADDRESS(CE_MODULE_INTERNAL, CE_INTERNAL_RETURN_WNDPROC); if (w->wndproc & 1u) cpu->cpsr |= CE_CPSR_T; else cpu->cpsr &= ~CE_CPSR_T; return CE_OK; }
@@ -314,6 +323,34 @@ CEStatus CEKernelDispatch(CEKernel *k, CECPU *cpu, uint16_t module, uint16_t fn)
         CEKernelObject object = {.type = CE_OBJECT_FIND}; object.value.find_state = find; CEHandle handle = CEKernelAddHandle(k, object); if (!handle || write_guest(k, cpu->r[1], &data, sizeof(data)) != CE_OK) { if (handle) CEKernelCloseHandle(k, handle); else { closedir(find->directory); free(find); } cpu->r[0] = UINT32_MAX; return CE_OK; } cpu->r[0] = handle; return CE_OK; }
     case CE_API_FIND_NEXT_FILE_W: { CEHandle h = cpu->r[0]; CEFindData data; if (!h || h >= CE_MAX_KERNEL_HANDLES || k->handles[h].type != CE_OBJECT_FIND || !find_next(k->handles[h].value.find_state, &data)) { cpu->r[0] = 0; return CE_OK; } cpu->r[0] = write_guest(k, cpu->r[1], &data, sizeof(data)) == CE_OK; return CE_OK; }
     case CE_API_FIND_CLOSE: { CEHandle h = cpu->r[0]; bool valid = h && h < CE_MAX_KERNEL_HANDLES && k->handles[h].type == CE_OBJECT_FIND; cpu->r[0] = valid && CEKernelCloseHandle(k, h) == CE_OK; return CE_OK; }
+    case CE_API_TLS_CALL: {
+        if (cpu->r[0] == 0) { uint32_t index = 0; while (index < 64 && (k->tls_used & (UINT64_C(1) << index))) ++index; if (index == 64) cpu->r[0] = UINT32_MAX; else { k->tls_used |= UINT64_C(1) << index; (void)CEVirtualMemoryWriteU32(k->memory, k->tls_address + index * 4, 0); cpu->r[0] = index; } }
+        else if (cpu->r[0] == 1 && cpu->r[1] < 64 && (k->tls_used & (UINT64_C(1) << cpu->r[1]))) { k->tls_used &= ~(UINT64_C(1) << cpu->r[1]); (void)CEVirtualMemoryWriteU32(k->memory, k->tls_address + cpu->r[1] * 4, 0); cpu->r[0] = 1; }
+        else cpu->r[0] = 0;
+        return CE_OK; }
+    case CE_API_TLS_ALLOC: cpu->r[1] = 0; cpu->r[0] = 0; return CEKernelDispatch(k, cpu, CE_MODULE_COREDLL, CE_API_TLS_CALL);
+    case CE_API_TLS_FREE: cpu->r[1] = cpu->r[0]; cpu->r[0] = 1; return CEKernelDispatch(k, cpu, CE_MODULE_COREDLL, CE_API_TLS_CALL);
+    case CE_API_TLS_GET_VALUE: { uint32_t index = cpu->r[0], value = 0; if (index < 64 && (k->tls_used & (UINT64_C(1) << index))) (void)CEVirtualMemoryReadU32(k->memory, k->tls_address + index * 4, &value); cpu->r[0] = value; return CE_OK; }
+    case CE_API_TLS_SET_VALUE: { uint32_t index = cpu->r[0]; bool valid = index < 64 && (k->tls_used & (UINT64_C(1) << index)); if (valid) (void)CEVirtualMemoryWriteU32(k->memory, k->tls_address + index * 4, cpu->r[1]); cpu->r[0] = valid; return CE_OK; }
+    case CE_API_OUTPUT_DEBUG_STRING_W: cpu->r[0] = 0; return CE_OK;
+    case CE_API_BEGIN_PAINT: { uint8_t paint[64] = {0}; uint32_t dc = 1; memcpy(paint, &dc, 4); CEWindow *w = CEWindowFind(k->windows, cpu->r[0]); int32_t rect[4] = {0, 0, w ? w->width : (int32_t)k->windows->width, w ? w->height : (int32_t)k->windows->height}; memcpy(paint + 8, rect, sizeof(rect)); if (write_guest(k, cpu->r[1], paint, sizeof(paint)) != CE_OK) cpu->r[0] = 0; else cpu->r[0] = 1; return CE_OK; }
+    case CE_API_END_PAINT: cpu->r[0] = 1; return CE_OK;
+    case CE_API_GET_STOCK_OBJECT: { uint32_t colors[] = {0xffffffffu,0xffc0c0c0u,0xff808080u,0xff404040u,0xff000000u,0x00000000u}; uint32_t index = cpu->r[0]; if (index > 5) { cpu->r[0] = 0; return CE_OK; } CEKernelObject object = {.type = CE_OBJECT_BRUSH}; object.value.color = colors[index]; cpu->r[0] = CEKernelAddHandle(k, object); return CE_OK; }
+    case CE_API_SELECT_OBJECT: { CEHandle h = cpu->r[1]; if (h && h < CE_MAX_KERNEL_HANDLES && (k->handles[h].type == CE_OBJECT_BRUSH || k->handles[h].type == CE_OBJECT_PEN)) { uint32_t old = k->selected_color; k->selected_color = k->handles[h].value.color; cpu->r[0] = old; } else cpu->r[0] = 0; return CE_OK; }
+    case CE_API_CREATE_PEN: { CEKernelObject object = {.type = CE_OBJECT_PEN}; object.value.color = colorref_to_bgra(cpu->r[2]); cpu->r[0] = CEKernelAddHandle(k, object); return CE_OK; }
+    case CE_API_RECTANGLE: { uint32_t bottom; if (CEVirtualMemoryReadU32(k->memory, cpu->r[CE_REG_SP], &bottom) != CE_OK) return CE_ERROR_ACCESS_VIOLATION; int32_t left = (int32_t)cpu->r[1], top = (int32_t)cpu->r[2], right = (int32_t)cpu->r[3]; (void)CEGDIFillRect(k->windows, left, top, right, (int32_t)bottom, k->selected_color); (void)CEGDIDrawLine(k->windows, left, top, right - 1, top, 0xff000000u); (void)CEGDIDrawLine(k->windows, left, top, left, (int32_t)bottom - 1, 0xff000000u); cpu->r[0] = 1; return CE_OK; }
+    case CE_API_MOVE_TO_EX: { if (cpu->r[3]) { int32_t old[2] = {k->pen_x, k->pen_y}; (void)write_guest(k, cpu->r[3], old, sizeof(old)); } k->pen_x = (int32_t)cpu->r[1]; k->pen_y = (int32_t)cpu->r[2]; cpu->r[0] = 1; return CE_OK; }
+    case CE_API_LINE_TO: { int32_t x = (int32_t)cpu->r[1], y = (int32_t)cpu->r[2]; (void)CEGDIDrawLine(k->windows, k->pen_x, k->pen_y, x, y, k->selected_color); k->pen_x = x; k->pen_y = y; cpu->r[0] = 1; return CE_OK; }
+    case CE_API_SET_TIMER: { uint32_t identifier = cpu->r[1]; for (size_t i = 0; i < CE_MAX_TIMERS; ++i) if (!k->windows->timers[i].active || (k->windows->timers[i].hwnd == cpu->r[0] && k->windows->timers[i].identifier == identifier)) { if (!identifier) identifier = (uint32_t)i + 1; k->windows->timers[i] = (CEWindowTimer){cpu->r[0], identifier, cpu->r[2] < 10 ? 10 : cpu->r[2], CEClockMilliseconds() + (cpu->r[2] < 10 ? 10 : cpu->r[2]), true}; cpu->r[0] = identifier; return CE_OK; } cpu->r[0] = 0; return CE_OK; }
+    case CE_API_KILL_TIMER: { bool found = false; for (size_t i = 0; i < CE_MAX_TIMERS; ++i) if (k->windows->timers[i].active && k->windows->timers[i].hwnd == cpu->r[0] && k->windows->timers[i].identifier == cpu->r[1]) { k->windows->timers[i].active = false; found = true; } cpu->r[0] = found; return CE_OK; }
+    case CE_API_GET_KEY_STATE: case CE_API_GET_ASYNC_KEY_STATE: { uint32_t key = cpu->r[0] & 0xffu; cpu->r[0] = k->windows->key_state[key] ? 0x8000u : 0; return CE_OK; }
+    case CE_API_GET_SYSTEM_METRICS: if (cpu->r[0] == 0) cpu->r[0] = k->windows->width; else if (cpu->r[0] == 1) cpu->r[0] = k->windows->height; else cpu->r[0] = 0; return CE_OK;
+    case CE_API_GET_DEVICE_CAPS: if (cpu->r[1] == 8) cpu->r[0] = k->windows->width; else if (cpu->r[1] == 10) cpu->r[0] = k->windows->height; else if (cpu->r[1] == 12) cpu->r[0] = 32; else cpu->r[0] = 1; return CE_OK;
+    case CE_API_GET_SYSTEM_INFO: { uint8_t info[36] = {0}; uint16_t architecture = 5, level = 4; uint32_t page = 4096, minimum = 0x00010000u, maximum = 0x7fffffffu, processor_mask = 1, processors = 1, processor_type = 2577, granularity = 65536;
+        memcpy(info, &architecture, 2); memcpy(info + 4, &page, 4); memcpy(info + 8, &minimum, 4); memcpy(info + 12, &maximum, 4); memcpy(info + 16, &processor_mask, 4); memcpy(info + 20, &processors, 4); memcpy(info + 24, &processor_type, 4); memcpy(info + 28, &granularity, 4); memcpy(info + 32, &level, 2);
+        if (write_guest(k, cpu->r[0], info, sizeof(info)) != CE_OK) return CE_ERROR_ACCESS_VIOLATION;
+        cpu->r[0] = 0; return CE_OK; }
+    case CE_API_MESSAGE_BOX_W: { uint16_t text[128] = {0}, title[64] = {0}; if (cpu->r[1]) (void)CEVirtualMemoryReadUTF16(k->memory, cpu->r[1], text, CE_ARRAY_COUNT(text)); if (cpu->r[2]) (void)CEVirtualMemoryReadUTF16(k->memory, cpu->r[2], title, CE_ARRAY_COUNT(title)); (void)CEGDIFillRect(k->windows, 16, 72, (int32_t)k->windows->width - 16, 200, 0xffe8e8e8u); size_t n = 0; while (n < CE_ARRAY_COUNT(title) && title[n]) ++n; (void)CEGDIDrawTextUTF16(k->windows, 24, 82, title, n, 0xff000000u, 0xffe8e8e8u, true); n = 0; while (n < CE_ARRAY_COUNT(text) && text[n]) ++n; (void)CEGDIDrawTextUTF16(k->windows, 24, 104, text, n, 0xff000000u, 0xffe8e8e8u, true); cpu->r[0] = 1; return CE_OK; }
     default: k->last_error = 120; cpu->r[0] = 0; return CE_ERROR_UNSUPPORTED;
     }
 }

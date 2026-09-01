@@ -34,6 +34,11 @@ typedef CEStatus (*CEPEImportResolver)(void *context, const char *module,
 CEStatus CEPEParse(const uint8_t *data, size_t size, CEPEImage *image);
 CEStatus CEPEMap(const uint8_t *data, size_t size, CEPEImage *image,
                  CEVirtualMemory *memory, CEPEImportResolver resolver, void *context);
+CEStatus CEPELookupExport(const CEPEImage *image, const CEVirtualMemory *memory,
+                          const char *symbol, uint16_t ordinal, CEAddress *address);
+CEStatus CEPELookupStringResource(const CEPEImage *image, const CEVirtualMemory *memory,
+                                  uint32_t identifier, uint16_t *text, size_t capacity,
+                                  size_t *length);
 
 #if defined(__cplusplus)
 }

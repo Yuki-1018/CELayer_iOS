@@ -134,3 +134,18 @@ CEStatus CEGDIDrawTextUTF16(CEWindowServer *server, int32_t x, int32_t y,
     }
     server->generation++; return CE_OK;
 }
+CEStatus CEGDIDrawLine(CEWindowServer *server, int32_t x0, int32_t y0,
+                       int32_t x1, int32_t y1, uint32_t color) {
+    if (!server || !server->framebuffer) return CE_ERROR_INVALID_ARGUMENT;
+    int32_t dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int32_t dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1, error = dx + dy;
+    for (;;) {
+        if (x0 >= 0 && y0 >= 0 && x0 < (int32_t)server->width && y0 < (int32_t)server->height)
+            server->framebuffer[(size_t)y0 * server->width + (size_t)x0] = color;
+        if (x0 == x1 && y0 == y1) break;
+        int32_t twice = error * 2;
+        if (twice >= dy) { error += dy; x0 += sx; }
+        if (twice <= dx) { error += dx; y0 += sy; }
+    }
+    server->generation++; return CE_OK;
+}

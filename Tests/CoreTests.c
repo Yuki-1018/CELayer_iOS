@@ -23,6 +23,8 @@ static void test_memory(void) {
     CHECK(CEVirtualMemoryWriteU32(&vm, a, 1) == CE_ERROR_ACCESS_VIOLATION);
     CHECK(CEVirtualMemoryFree(&vm, a) == CE_OK);
     CHECK(CEVirtualMemoryReadU32(&vm, a, &value) == CE_ERROR_ACCESS_VIOLATION);
+    CHECK(CEVirtualMemoryMap(&vm, 0xfffff000u, 4096, CE_PROT_READ | CE_PROT_WRITE, "top page") == CE_OK);
+    CHECK(CEVirtualMemoryWriteU32(&vm, 0xfffffffcu, 0x12345678u) == CE_OK);
     CEVirtualMemoryDestroy(&vm);
 }
 
@@ -38,6 +40,26 @@ static void test_pe(void) {
     CHECK(CEPEMap(pe, sizeof(pe), &image, &vm, NULL, NULL) == CE_OK);
     uint32_t insn; CHECK(CEVirtualMemoryReadU32(&vm, 0x00401000, &insn) == CE_OK); CHECK(insn == 0xe3a0002a);
     CEVirtualMemoryDestroy(&vm); pe[0] = 0; CHECK(CEPEParse(pe, sizeof(pe), &image) == CE_ERROR_BAD_FORMAT);
+}
+
+static void test_pe_exports(void) {
+    CEVirtualMemory vm; CEVirtualMemoryInit(&vm);
+    CHECK(CEVirtualMemoryMap(&vm, 0x5000, 0x1000, CE_PROT_READ | CE_PROT_WRITE, "exports") == CE_OK);
+    CEPEImage image; memset(&image, 0, sizeof(image)); image.mapped_base = 0x5000;
+    image.directories[0].rva = 0x100; image.directories[0].size = 0x100;
+    CHECK(CEVirtualMemoryWriteU32(&vm, 0x5110, 1) == CE_OK);
+    CHECK(CEVirtualMemoryWriteU32(&vm, 0x5114, 1) == CE_OK);
+    CHECK(CEVirtualMemoryWriteU32(&vm, 0x5118, 1) == CE_OK);
+    CHECK(CEVirtualMemoryWriteU32(&vm, 0x511c, 0x180) == CE_OK);
+    CHECK(CEVirtualMemoryWriteU32(&vm, 0x5120, 0x184) == CE_OK);
+    CHECK(CEVirtualMemoryWriteU32(&vm, 0x5124, 0x188) == CE_OK);
+    CHECK(CEVirtualMemoryWriteU32(&vm, 0x5180, 0x300) == CE_OK);
+    CHECK(CEVirtualMemoryWriteU32(&vm, 0x5184, 0x190) == CE_OK);
+    uint16_t name_ordinal = 0; CHECK(CEVirtualMemoryWrite(&vm, 0x5188, &name_ordinal, 2) == CE_OK);
+    const char name[] = "Foo"; CHECK(CEVirtualMemoryWrite(&vm, 0x5190, name, sizeof(name)) == CE_OK);
+    CEAddress address = 0; CHECK(CEPELookupExport(&image, &vm, "Foo", 0, &address) == CE_OK);
+    CHECK(address == 0x5300); CHECK(CEPELookupExport(&image, &vm, NULL, 1, &address) == CE_OK);
+    CEVirtualMemoryDestroy(&vm);
 }
 
 static void test_arm(void) {
@@ -68,6 +90,9 @@ static void test_api_trap(void) {
     cpu.r[CE_REG_LR] = 0x1001; CHECK(CECPUStep(&cpu) == CE_OK);
     CHECK(capture.number == ((CE_MODULE_COREDLL << 16) | CE_API_FILL_RECT));
     CHECK(cpu.r[CE_REG_PC] == 0x1000); CHECK((cpu.cpsr & CE_CPSR_T) != 0);
+    capture.number = 0; cpu.r[CE_REG_PC] = 0xf000f7f8u; cpu.r[CE_REG_LR] = 0x1000;
+    CHECK(CECPUStep(&cpu) == CE_OK);
+    CHECK(capture.number == (CE_TRAP_NATIVE | (2u << 16) | 2u));
     CEVirtualMemoryDestroy(&vm);
 }
 
@@ -89,6 +114,21 @@ static void test_kernel_gwes(void) {
     CEWindowServer ws; CHECK(CEWindowServerInit(&ws, 240, 320) == CE_OK);
     CEKernel kernel; CEKernelInit(&kernel, &vm, &ws, NULL);
     CECPU cpu; CECPUInit(&cpu, &vm); cpu.r[CE_REG_SP] = 0x4f00;
+    uint32_t tls_pointer = 0; CHECK(CEVirtualMemoryReadU32(&vm, 0xffffc800u, &tls_pointer) == CE_OK);
+    CHECK(tls_pointer == kernel.tls_address);
+    cpu.r[0] = 0; cpu.r[1] = 0;
+    CHECK(CEKernelDispatch(&kernel, &cpu, CE_MODULE_COREDLL, CE_API_TLS_CALL) == CE_OK);
+    uint32_t tls_index = cpu.r[0]; cpu.r[0] = tls_index; cpu.r[1] = 0xabcdef01u;
+    CHECK(CEKernelDispatch(&kernel, &cpu, CE_MODULE_COREDLL, CE_API_TLS_SET_VALUE) == CE_OK);
+    cpu.r[0] = tls_index; CHECK(CEKernelDispatch(&kernel, &cpu, CE_MODULE_COREDLL, CE_API_TLS_GET_VALUE) == CE_OK);
+    CHECK(cpu.r[0] == 0xabcdef01u);
+
+    cpu.r[0] = 0x1400;
+    CHECK(CEKernelDispatch(&kernel, &cpu, CE_MODULE_COREDLL, CE_API_GET_SYSTEM_INFO) == CE_OK);
+    uint16_t architecture = 0; uint32_t page_size = 0;
+    CHECK(CEVirtualMemoryReadU16(&vm, 0x1400, &architecture) == CE_OK);
+    CHECK(CEVirtualMemoryReadU32(&vm, 0x1404, &page_size) == CE_OK);
+    CHECK(architecture == 5 && page_size == 4096);
 
     cpu.r[0] = 0x000000ffu;
     CHECK(CEKernelDispatch(&kernel, &cpu, CE_MODULE_COREDLL, CE_API_CREATE_SOLID_BRUSH) == CE_OK);
@@ -140,6 +180,6 @@ static void test_kernel_gwes(void) {
 }
 
 int main(void) {
-    test_memory(); test_pe(); test_arm(); test_thumb(); test_api_trap(); test_windows(); test_kernel_gwes();
+    test_memory(); test_pe(); test_pe_exports(); test_arm(); test_thumb(); test_api_trap(); test_windows(); test_kernel_gwes();
     puts("CELayer core tests passed"); return 0;
 }

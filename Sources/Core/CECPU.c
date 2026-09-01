@@ -1,4 +1,5 @@
 #include "CELayer/CECPU.h"
+#include "CELayer/CEAPI.h"
 
 #include <string.h>
 
@@ -70,7 +71,8 @@ static CEStatus step_arm(CECPU *cpu) {
         cpu->r[rd] = result; if (x & (1u << 20)) set_nz(cpu, result); return CE_OK;
     }
     if ((x & 0x0f000000u) == 0x0f000000u) {
-        return cpu->trap_handler ? cpu->trap_handler(cpu->trap_context, cpu, x & 0x00ffffffu)
+        return cpu->trap_handler ? cpu->trap_handler(cpu->trap_context, cpu,
+            CE_TRAP_SOFTWARE_INTERRUPT | (x & 0x00ffffffu))
                                  : CE_ERROR_UNSUPPORTED;
     }
     if ((x & 0x0e000000u) == 0x0a000000u) { /* B/BL */
@@ -165,7 +167,8 @@ static CEStatus step_thumb(CECPU *cpu) {
     CEStatus s = CEVirtualMemoryReadU16(cpu->memory, pc, &x); if (s != CE_OK) return s;
     cpu->r[CE_REG_PC] = pc + 2;
     if ((x & 0xff00u) == 0xdf00u) return cpu->trap_handler ?
-        cpu->trap_handler(cpu->trap_context, cpu, x & 0xffu) : CE_ERROR_UNSUPPORTED;
+        cpu->trap_handler(cpu->trap_context, cpu, CE_TRAP_SOFTWARE_INTERRUPT | (x & 0xffu))
+        : CE_ERROR_UNSUPPORTED;
     if ((x & 0xff87u) == 0x4700u) { uint32_t target = cpu->r[(x >> 3) & 0xfu];
         cpu->r[CE_REG_PC] = target & ~1u; if (target & 1u) cpu->cpsr |= CE_CPSR_T;
         else cpu->cpsr &= ~CE_CPSR_T;
@@ -262,8 +265,16 @@ static CEStatus step_thumb(CECPU *cpu) {
 CEStatus CECPUStep(CECPU *cpu) {
     if (!cpu || !cpu->memory) return CE_ERROR_INVALID_ARGUMENT;
     if (cpu->halted) return CE_ERROR_HALTED;
-    if ((cpu->r[CE_REG_PC] & 0xf0000000u) == 0xf0000000u) {
-        uint32_t trap = (cpu->r[CE_REG_PC] & 0x0fffffffu) >> 2;
+    uint32_t direct_pc = cpu->r[CE_REG_PC];
+    if ((direct_pc & 0xff000000u) == 0xee000000u ||
+        (direct_pc >= 0xf0008000u && direct_pc < 0xf0010000u)) {
+        uint32_t trap;
+        if ((direct_pc & 0xff000000u) == 0xee000000u)
+            trap = (direct_pc & 0x00ffffffu) >> 2;
+        else {
+            uint32_t index = (0xf0010000u - direct_pc) >> 2;
+            trap = CE_TRAP_NATIVE | ((index >> 8) << 16) | (index & 0xffu);
+        }
         cpu->r[CE_REG_PC] = cpu->r[CE_REG_LR] & ~1u;
         if (cpu->r[CE_REG_LR] & 1u) cpu->cpsr |= CE_CPSR_T;
         else cpu->cpsr &= ~CE_CPSR_T;

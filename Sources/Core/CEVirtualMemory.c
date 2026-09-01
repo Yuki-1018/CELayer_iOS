@@ -43,7 +43,7 @@ CEStatus CEVirtualMemoryMap(CEVirtualMemory *vm, CEAddress base, uint32_t size,
                             CEProtection protection, const char *name) {
     if (!vm || !size || (base & (CE_PAGE_SIZE - 1u))) return CE_ERROR_INVALID_ARGUMENT;
     size = align_page(size);
-    if ((uint64_t)base + size > UINT32_MAX || vm->region_count >= CE_VM_MAX_REGIONS)
+    if ((uint64_t)base + size > (uint64_t)UINT32_MAX + 1u || vm->region_count >= CE_VM_MAX_REGIONS)
         return CE_ERROR_LIMIT;
     for (size_t i = 0; i < vm->region_count; ++i)
         if (ranges_overlap(base, size, vm->regions[i].base, vm->regions[i].size))
@@ -60,7 +60,8 @@ CEStatus CEVirtualMemoryMap(CEVirtualMemory *vm, CEAddress base, uint32_t size,
         strncpy(r->name, name, sizeof(r->name) - 1u);
         r->name[sizeof(r->name) - 1u] = '\0';
     }
-    if (base >= vm->allocation_cursor) vm->allocation_cursor = base + size;
+    uint64_t end = (uint64_t)base + size;
+    if (base >= vm->allocation_cursor && end <= UINT32_MAX) vm->allocation_cursor = (CEAddress)end;
     return CE_OK;
 }
 

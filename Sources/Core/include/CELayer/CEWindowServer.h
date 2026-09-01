@@ -10,6 +10,7 @@ extern "C" {
 #define CE_MAX_WINDOWS 128u
 #define CE_MAX_WINDOW_CLASSES 64u
 #define CE_MESSAGE_QUEUE_SIZE 512u
+#define CE_MAX_TIMERS 64u
 typedef struct CEMessage { CEHandle hwnd; uint32_t message, wparam, lparam, time; } CEMessage;
 typedef struct CEWindow {
     CEHandle handle, parent; int32_t x, y, width, height; uint32_t style;
@@ -19,10 +20,14 @@ typedef struct CEWindow {
 typedef struct CEWindowClass {
     uint16_t name[64]; CEAddress wndproc; uint32_t style; CEHandle background;
 } CEWindowClass;
+typedef struct CEWindowTimer {
+    CEHandle hwnd; uint32_t identifier, interval; uint64_t next_fire; bool active;
+} CEWindowTimer;
 typedef struct CEWindowServer {
     CEWindow windows[CE_MAX_WINDOWS]; size_t window_count; CEHandle next_handle, focus, capture;
     CEWindowClass classes[CE_MAX_WINDOW_CLASSES]; size_t class_count;
     CEMessage messages[CE_MESSAGE_QUEUE_SIZE]; size_t queue_head, queue_count;
+    CEWindowTimer timers[CE_MAX_TIMERS]; uint8_t key_state[256];
     uint32_t *framebuffer; uint32_t width, height, generation;
 } CEWindowServer;
 
@@ -45,6 +50,8 @@ CEStatus CEGDIBitBlt(CEWindowServer *server, int32_t dx, int32_t dy, uint32_t wi
 CEStatus CEGDIDrawTextUTF16(CEWindowServer *server, int32_t x, int32_t y,
                             const uint16_t *text, size_t length,
                             uint32_t foreground, uint32_t background, bool opaque);
+CEStatus CEGDIDrawLine(CEWindowServer *server, int32_t x0, int32_t y0,
+                       int32_t x1, int32_t y1, uint32_t color);
 
 #if defined(__cplusplus)
 }

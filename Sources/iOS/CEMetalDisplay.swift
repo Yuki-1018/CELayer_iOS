@@ -10,6 +10,7 @@ struct CEMetalDisplay: UIViewRepresentable {
         view.colorPixelFormat = .bgra8Unorm; view.framebufferOnly = true; view.enableSetNeedsDisplay = false
         view.isPaused = false; view.preferredFramesPerSecond = 60; view.delegate = context.coordinator
         view.onPointer = { [weak runtime] x, y, down in runtime?.pointer(x: x, y: y, down: down) }
+        view.onKey = { [weak runtime] key, down in runtime?.key(key, down: down) }
         context.coordinator.configure(view)
         return view
     }
@@ -57,13 +58,42 @@ struct CEMetalDisplay: UIViewRepresentable {
 
 final class TouchMetalView: MTKView {
     var onPointer: ((Int32, Int32, Bool) -> Void)?
+    var onKey: ((UInt32, Bool) -> Void)?
+    override var canBecomeFirstResponder: Bool { true }
     private func point(_ touch: UITouch) -> (Int32, Int32) {
         let p = touch.location(in: self)
         return (Int32(max(0, min(239, p.x / max(bounds.width, 1) * 240))),
                 Int32(max(0, min(319, p.y / max(bounds.height, 1) * 320))))
     }
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { let p = point(t); onPointer?(p.0, p.1, true) } }
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) { becomeFirstResponder(); if let t = touches.first { let p = point(t); onPointer?(p.0, p.1, true) } }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { let p = point(t); onPointer?(p.0, p.1, true) } }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) { if let t = touches.first { let p = point(t); onPointer?(p.0, p.1, false) } }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { touchesEnded(touches, with: event) }
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses { if let key = press.key, let vk = virtualKey(key.keyCode.rawValue) { onKey?(vk, true); handled = true } }
+        if !handled { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var handled = false
+        for press in presses { if let key = press.key, let vk = virtualKey(key.keyCode.rawValue) { onKey?(vk, false); handled = true } }
+        if !handled { super.pressesEnded(presses, with: event) }
+    }
+    private func virtualKey(_ usage: Int) -> UInt32? {
+        if (4...29).contains(usage) { return UInt32(0x41 + usage - 4) }
+        if (30...38).contains(usage) { return UInt32(0x31 + usage - 30) }
+        if usage == 39 { return 0x30 }
+        switch usage {
+        case 40: return 0x0d
+        case 41: return 0x1b
+        case 42: return 0x08
+        case 43: return 0x09
+        case 44: return 0x20
+        case 79: return 0x27
+        case 80: return 0x25
+        case 81: return 0x28
+        case 82: return 0x26
+        default: return nil
+        }
+    }
 }
